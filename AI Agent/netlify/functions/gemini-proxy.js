@@ -40,6 +40,21 @@ function errMsgOf(data){
   return JSON.stringify((data && data.error) || "");
 }
 
+function sleep(ms){
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Gemini kadang ngasih tau di body error berapa detik lagi kudu nunggu
+// (field "retryDelay", format "12.3s"). Kalau ada, pakai itu; kalau nggak,
+// fallback ke jeda pendek. Di-cap biar gak nunggu kelamaan & bikin function
+// keburu timeout di Netlify (default 10s buat function biasa).
+function retryDelayMsOf(data){
+  const msg = errMsgOf(data);
+  const m = msg.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i);
+  const seconds = m ? parseFloat(m[1]) : 2;
+  return Math.min(Math.max(seconds, 1), 6) * 1000;
+}
+
 // Kena limit pemakaian (kuota/rate limit) — model-nya sendiri sehat, cuma
 // lagi penuh. Layak dicoba ulang, baik di model yang sama (nanti) maupun
 // pindah ke model lain.
@@ -145,44 +160,74 @@ exports.handler = async function (event) {
   }
 
   const modelChain = buildChain(preferred_model);
-  let lastResult = null;
 
-  for (let i = 0; i < modelChain.length; i++){
-    const model = modelChain[i];
+  // Jalanin 1x "putaran" nyisir seluruh modelChain. Kalau ada yang sukses
+  // (atau error yang gak layak di-retry), balikin langsung sebagai respons
+  // final ({done:true, ...}). Kalau SEMUA model di putaran ini abis dicoba
+  // & semuanya rate-limit/gak-available, balikin {done:false, lastResult}
+  // biar caller bisa mutusin mau retry putaran lagi atau nyerah.
+  async function runChainPass(){
+    let lastResult = null;
+    for (let i = 0; i < modelChain.length; i++){
+      const model = modelChain[i];
 
-    // Buat MODEL INI, mulai dari level yang diminta terus naik tangga
-    // (minimal -> low -> medium -> high) kalau kena error "thinking level
-    // not supported". Begitu level-nya cocok atau errornya BUKAN soal
-    // thinking level, langsung berhenti di sini (baik sukses maupun error
-    // lain yang mesti pindah model).
-    for (let lvl = startLadderIdx; lvl < THINKING_LEVEL_LADDER.length; lvl++){
-      const thinkingLevel = THINKING_LEVEL_LADDER[lvl];
-      try {
-        const result = await callGemini(model, geminiBodyBase, thinkingLevel, apiKey);
-        lastResult = result;
+      // Buat MODEL INI, mulai dari level yang diminta terus naik tangga
+      // (minimal -> low -> medium -> high) kalau kena error "thinking level
+      // not supported". Begitu level-nya cocok atau errornya BUKAN soal
+      // thinking level, langsung berhenti di sini (baik sukses maupun error
+      // lain yang mesti pindah model).
+      for (let lvl = startLadderIdx; lvl < THINKING_LEVEL_LADDER.length; lvl++){
+        const thinkingLevel = THINKING_LEVEL_LADDER[lvl];
+        try {
+          const result = await callGemini(model, geminiBodyBase, thinkingLevel, apiKey);
+          lastResult = result;
 
-        if (isThinkingLevelError(result.status, result.data)){
-          continue; // naik ke level berikutnya, model yang sama
+          if (isThinkingLevelError(result.status, result.data)){
+            continue; // naik ke level berikutnya, model yang sama
+          }
+          if (isRateLimitError(result.status, result.data) || isModelUnavailableError(result.status, result.data)){
+            break; // nyerah di model ini, lanjut ke model berikutnya di chain
+          }
+
+          // Sukses ATAU error lain yang gak layak di-retry (mis. safety
+          // block, payload salah) -> langsung balikin ke client apa adanya.
+          result.data.modelUsed = model;
+          return {
+            done: true,
+            statusCode: result.status,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(result.data)
+          };
+        } catch (e) {
+          lastResult = { status: 502, data: { error: "Gagal menghubungi Gemini API (" + model + "): " + e.message } };
+          break; // error jaringan, gak ada gunanya ganti-ganti thinkingLevel — lanjut ke model berikutnya
         }
-        if (isRateLimitError(result.status, result.data) || isModelUnavailableError(result.status, result.data)){
-          break; // nyerah di model ini, lanjut ke model berikutnya di chain
-        }
-
-        // Sukses ATAU error lain yang gak layak di-retry (mis. safety
-        // block, payload salah) -> langsung balikin ke client apa adanya.
-        result.data.modelUsed = model;
-        return {
-          statusCode: result.status,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(result.data)
-        };
-      } catch (e) {
-        lastResult = { status: 502, data: { error: "Gagal menghubungi Gemini API (" + model + "): " + e.message } };
-        break; // error jaringan, gak ada gunanya ganti-ganti thinkingLevel — lanjut ke model berikutnya
       }
     }
+    return { done: false, lastResult: lastResult };
   }
 
+  // Putaran pertama nyisir semua model di chain. Kalau semuanya kena rate
+  // limit (429/RESOURCE_EXHAUSTED) — bukan model-nya rusak, cuma lagi
+  // penuh jatahnya — worth it buat nunggu bentar (pakai retryDelay dari
+  // Gemini kalau ada) terus nyoba SATU putaran lagi dari awal chain,
+  // sebelum akhirnya nyerah & lapor rate-limit ke client. Cuma 1x extra
+  // pass biar total durasi function tetep aman dari timeout Netlify.
+  let pass = await runChainPass();
+  if (!pass.done && pass.lastResult && isRateLimitError(pass.lastResult.status, pass.lastResult.data)){
+    await sleep(retryDelayMsOf(pass.lastResult.data));
+    pass = await runChainPass();
+  }
+
+  if (pass.done){
+    return {
+      statusCode: pass.statusCode,
+      headers: pass.headers,
+      body: pass.body
+    };
+  }
+
+  const lastResult = pass.lastResult;
   const finalData = lastResult ? lastResult.data : { error: "Semua model di GEMINI_MODEL_CHAIN gagal, gak ada respons." };
   return {
     statusCode: (lastResult && lastResult.status) || 502,

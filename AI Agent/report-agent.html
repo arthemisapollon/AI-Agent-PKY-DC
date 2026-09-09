@@ -205,7 +205,32 @@
   }
 
   .chat-input-row{
+    position:relative;
     display:flex; flex-direction:column; gap:8px; padding:12px; border-top:1px solid var(--line); background:var(--panel);
+  }
+
+  /* ===== Command Bar / AI Command Palette (slash commands + ⌘K) ===== */
+  .cmd-palette{
+    position:absolute; left:12px; right:12px; bottom:100%; margin-bottom:10px;
+    background:var(--panel-2); border:1px solid var(--line); border-radius:12px;
+    padding:6px; box-shadow:0 12px 28px rgba(0,0,0,.4); max-height:280px; overflow-y:auto;
+    display:none; z-index:20;
+  }
+  .cmd-palette.show{display:block;}
+  .cmd-palette-hint{
+    font-size:10px; color:var(--muted); padding:6px 10px 8px; letter-spacing:.05em; text-transform:uppercase;
+  }
+  .cmd-palette-item{
+    display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; cursor:pointer;
+  }
+  .cmd-palette-item:hover, .cmd-palette-item.active{background:var(--panel);}
+  .cmd-palette-item .cmd-icon{font-size:16px; flex:none; width:22px; text-align:center;}
+  .cmd-palette-item .cmd-text{display:flex; flex-direction:column; gap:1px; min-width:0;}
+  .cmd-palette-item .cmd-name{
+    font-family:'IBM Plex Mono',monospace; font-size:12.5px; color:var(--cyan); font-weight:600;
+  }
+  .cmd-palette-item .cmd-desc{
+    font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
   .model-select-row{display:flex; justify-content:flex-end;}
   .model-select{
@@ -385,6 +410,8 @@
       <div class="model-select-row">
         <select id="modelSelect" class="model-select" title="Pilih model AI">
           <option value="">Auto</option>
+          <option value="gemini-2.5-flash-lite">Odyssey 2.5</option>
+          <option value="gemini-2.5-flash">Odyssey 2.5 Pro</option>
           <option value="gemini-3-flash">Odyssey 3.0</option>
           <option value="gemini-3.1-flash-lite">Odyssey 3.1</option>
           <option value="gemini-3.5-flash">Odyssey 3.5 Pro</option>
@@ -401,8 +428,9 @@
         </div>
         <span class="hint">Gambar siap dikirim — tambahin pertanyaan (opsional) lalu Kirim</span>
       </div>
+      <div class="cmd-palette" id="cmdPalette"></div>
       <div class="chat-input-inner">
-        <input id="chatInput" type="text" placeholder='Tanya AI Agent... misal "ada unit Late Arrival hari ini?" (bisa paste gambar Ctrl+V)'>
+        <input id="chatInput" type="text" placeholder='⌘K · Ask Odyssey anything... ketik &quot;/&quot; buat command (misal /late, /vendor) — bisa paste gambar Ctrl+V'>
         <button id="sendBtn">Kirim</button>
       </div>
     </div>
@@ -1675,6 +1703,8 @@ function typewriterInto(bubbleEl, fullText, onDone){
 // & proxy fallback ke model lain, yang balikin id mentah kayak
 // "gemini-3.6-flash").
 const ODYSSEY_MODEL_NAMES = {
+  "gemini-2.5-flash-lite": "Odyssey 2.5",
+  "gemini-2.5-flash": "Odyssey 2.5 Pro",
   "gemini-3-flash": "Odyssey 3.0",
   "gemini-3.1-flash-lite": "Odyssey 3.1",
   "gemini-3.5-flash": "Odyssey 3.5 Pro",
@@ -1690,10 +1720,13 @@ function friendlyModelName(rawId){
 
 // Urutan sama persis kayak GEMINI_MODEL_CHAIN di gemini-proxy.js — dipakai
 // buat retry SISI KLIEN (lihat askAgent) waktu satu model jawab tapi
-// hasilnya BUKAN rate limit/model retired (itu udah ke-handle proxy),
-// melainkan output-nya gak valid JSON. Model 2.5 SENGAJA gak dimasukin —
-// udah di-retire Google buat API key baru, jadi percuma dicoba.
+// hasilnya BUKAN rate limit, melainkan output-nya gak valid JSON (ini gak
+// ke-detect sama proxy karena proxy cuma ngecek status HTTP/RESOURCE_EXHAUSTED,
+// bukan ngerti isi balasan). Kalau ada model baru ditambah di proxy, tambahin
+// juga di sini biar auto-switch-nya ikut jalan.
 const ODYSSEY_MODEL_CHAIN = [
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
   "gemini-3-flash",
   "gemini-3.1-flash-lite",
   "gemini-3.5-flash",
@@ -1877,7 +1910,7 @@ function addTyping(){
   const el = document.createElement("div");
   el.className = "msg agent";
   el.id = "typingIndicator";
-  el.innerHTML = '<div class="msg-row"><div class="avatar avatar-agent"><img src="" alt="Odyssey" id="typingAvatarImg"></div><div style="display:flex;flex-direction:column;gap:4px;"><div class="who">Odyssey <span id="typingStatus" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;"></span></div><div class="typing-dots"><span></span><span></span><span></span></div></div></div>';
+  el.innerHTML = '<div class="msg-row"><div class="avatar avatar-agent"><img src="" alt="Odyssey" id="typingAvatarImg"></div><div style="display:flex;flex-direction:column;gap:4px;"><div class="who">Odyssey</div><div class="typing-dots"><span></span><span></span><span></span></div></div></div>';
   log.appendChild(el);
   document.getElementById("typingAvatarImg").src = window.__ODYSSEY_LOGO;
   log.scrollTop = log.scrollHeight;
@@ -1885,12 +1918,6 @@ function addTyping(){
 function removeTyping(){
   const el = document.getElementById("typingIndicator");
   if (el) el.remove();
-}
-// Update label kecil di sebelah "Odyssey" pas typing — dipakai buat kasih
-// tau user AI Agent-nya lagi nunggu jatah rate limit reset, bukan diem aja.
-function setTypingStatus(text){
-  const el = document.getElementById("typingStatus");
-  if (el) el.textContent = text ? ("· " + text) : "";
 }
 
 // ===== Lightbox gambar in-app (ganti window.open tab baru) =====
@@ -1908,6 +1935,117 @@ document.getElementById("lightboxOverlay").addEventListener("click", (e) => {
 });
 document.getElementById("lightboxCloseBtn").addEventListener("click", closeLightbox);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeLightbox(); });
+
+// ===== Command Bar / AI Command Palette =====
+// Ketik "/" di chat input buat munculin daftar shortcut command (/late, /convoy,
+// /report, /vendor, /queue, /stock, /dw, /summary), atau tetep bisa ngetik
+// pertanyaan natural language bebas kayak biasa. Setiap command di-map ke kalimat
+// pertanyaan yang udah kena kata kunci deteksi topik di askAgent() (lihat
+// dwKeywords/queueKeywords/inventoryControlKeywords/dataKeywords di atas), jadi
+// hasilnya sama persis kayak user ngetik manual.
+const SLASH_COMMANDS = [
+  { cmd: "/late",    icon: "🕒", label: "Late Arrival",    desc: "Cek unit yang Late Arrival hari ini",         query: "Ada unit Late Arrival hari ini?" },
+  { cmd: "/convoy",  icon: "🚚", label: "Convoy",           desc: "Cek unit yang jalan Convoy/beriringan",       query: "Ada unit Convoy hari ini?" },
+  { cmd: "/report",  icon: "📋", label: "Report Trip",      desc: "Rekap lengkap trip Inbound hari ini",         query: "Buatkan report lengkap trip Inbound hari ini" },
+  { cmd: "/vendor",  icon: "🏢", label: "Vendor",           desc: "Analisa performa & keterlambatan vendor",     query: "Vendor mana yang paling sering telat?" },
+  { cmd: "/queue",   icon: "🚦", label: "Antrian Inbound",  desc: "Report Antrian Inbound (ECO vs STD)",         query: "Buatkan Report Antrian Inbound (ECO vs STD) hari ini" },
+  { cmd: "/stock",   icon: "📦", label: "Stock",            desc: "Cek stock inventory yang udah menipis",       query: "Stock barang apa aja yang udah menipis?" },
+  { cmd: "/dw",      icon: "👷", label: "DW Fulfillment",   desc: "Report pemenuhan Daily Worker",               query: "Buatkan Report DW Fulfillment hari ini" },
+  { cmd: "/summary", icon: "🧾", label: "Summary",          desc: "Rekap semua trip hari ini",                   query: "Rekap semua trip hari ini" },
+];
+let cmdPaletteMatches = [];
+let cmdPaletteIndex = 0;
+
+function renderCmdPalette(matches){
+  cmdPaletteMatches = matches;
+  cmdPaletteIndex = 0;
+  const wrap = document.getElementById("cmdPalette");
+  wrap.innerHTML = "";
+  const hint = document.createElement("div");
+  hint.className = "cmd-palette-hint";
+  hint.textContent = "Command — ↑↓ pilih, Enter jalanin";
+  wrap.appendChild(hint);
+  matches.forEach((c, i) => {
+    const item = document.createElement("div");
+    item.className = "cmd-palette-item" + (i === 0 ? " active" : "");
+    item.innerHTML = `<span class="cmd-icon">${c.icon}</span><div class="cmd-text"><span class="cmd-name">${c.cmd}</span><span class="cmd-desc">${c.label} — ${c.desc}</span></div>`;
+    item.addEventListener("mousedown", (e) => {
+      e.preventDefault(); // biar input gak keburu blur sebelum kita proses klik
+      runSlashCommand(c);
+    });
+    wrap.appendChild(item);
+  });
+  wrap.classList.add("show");
+}
+function hideCmdPalette(){
+  const wrap = document.getElementById("cmdPalette");
+  wrap.classList.remove("show");
+  wrap.innerHTML = "";
+  cmdPaletteMatches = [];
+  cmdPaletteIndex = 0;
+}
+function isCmdPaletteOpen(){
+  return cmdPaletteMatches.length > 0;
+}
+function highlightCmdPaletteIndex(){
+  const wrap = document.getElementById("cmdPalette");
+  Array.from(wrap.querySelectorAll(".cmd-palette-item")).forEach((el, i) => {
+    el.classList.toggle("active", i === cmdPaletteIndex);
+  });
+}
+function updateCmdPalette(value){
+  if (!value.startsWith("/")){ hideCmdPalette(); return; }
+  const token = value.slice(1).toLowerCase();
+  const matches = SLASH_COMMANDS.filter(c =>
+    c.cmd.slice(1).toLowerCase().startsWith(token) || c.label.toLowerCase().includes(token)
+  );
+  if (!matches.length){ hideCmdPalette(); return; }
+  renderCmdPalette(matches);
+}
+function runSlashCommand(c){
+  hideCmdPalette();
+  const input = document.getElementById("chatInput");
+  input.value = "";
+  commitSend(c.query);
+}
+// Return true kalau tombolnya udah ditangani sama command palette (biar keydown
+// handler utama di chatInput gak ikut2an proses, misal Enter buat kirim biasa).
+function handleCmdPaletteKeydown(e){
+  if (!isCmdPaletteOpen()) return false;
+  if (e.key === "ArrowDown"){
+    e.preventDefault();
+    cmdPaletteIndex = (cmdPaletteIndex + 1) % cmdPaletteMatches.length;
+    highlightCmdPaletteIndex();
+    return true;
+  }
+  if (e.key === "ArrowUp"){
+    e.preventDefault();
+    cmdPaletteIndex = (cmdPaletteIndex - 1 + cmdPaletteMatches.length) % cmdPaletteMatches.length;
+    highlightCmdPaletteIndex();
+    return true;
+  }
+  if (e.key === "Enter" || e.key === "Tab"){
+    e.preventDefault();
+    runSlashCommand(cmdPaletteMatches[cmdPaletteIndex]);
+    return true;
+  }
+  if (e.key === "Escape"){
+    e.preventDefault();
+    hideCmdPalette();
+    return true;
+  }
+  return false;
+}
+// Shortcut global ⌘K / Ctrl+K — fokus ke chat input dari mana aja di halaman,
+// persis kayak command bar di app-app lain (Slack/Linear/dst).
+document.addEventListener("keydown", (e) => {
+  const isCmdK = (e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey);
+  if (!isCmdK) return;
+  e.preventDefault();
+  const input = document.getElementById("chatInput");
+  input.focus();
+  input.select();
+});
 
 // ===== Quick-reply shortcut chips =====
 const QUICK_REPLIES = [
@@ -2134,29 +2272,6 @@ function loadSession(sessionId){
     .catch(function(e){ console.warn("Gagal muat sesi:", e.message); });
 }
 
-function sleep(ms){
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Kena limit pemakaian (rate limit/quota free tier Gemini)?
-function isRateLimitMsg(raw){
-  const msg = String(raw || "");
-  return /rate.?limit/i.test(msg) || /RESOURCE_EXHAUSTED/i.test(msg) || /quota/i.test(msg) || /\b429\b/.test(msg);
-}
-
-// Ambil berapa detik lagi kudu nunggu dari pesan error (kalau Gemini kasih
-// tau lewat "retryDelay"/"try again in Xs"). Kalau gak ada info itu, fallback
-// ke jeda pendek. maxCapMs buat jaga-jaga biar user gak nunggu kelamaan di
-// 1x percobaan (default 15s buat prompt kecil, dikasih lebih longgar dari
-// caller buat prompt gede yang cuma 1x retry).
-function retryDelayMsOf(raw, maxCapMs){
-  const msg = String(raw || "");
-  const m = msg.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i) || msg.match(/try again in\s*([\d.]+)\s*s/i);
-  const seconds = m ? parseFloat(m[1]) : 5;
-  const capMs = maxCapMs || 15000;
-  return Math.min(Math.max(seconds * 1000, 1000), capMs);
-}
-
 // Ubah pesan error teknis dari API jadi kalimat simpel yang enak dibaca user
 // biasa, bukan mentahan pesan Gemini/HTTP yang penuh istilah teknis.
 function simplifyErrorMessage(raw){
@@ -2218,21 +2333,6 @@ async function askAgent(question, imageDataUrl){
   chatHistory.push({role:"user", content: userContent, hasImage: !!imageDataUrl});
   scheduleSaveSession();
   addTyping();
-
-  // Easter egg: kalau ditanya soal Irwan Khoirul Faiz, jawab langsung dari
-  // sini TANPA manggil Gemini sama sekali — selain lebih personal/konsisten
-  // (gak tergantung model mana yang lagi jawab), ini juga nol biaya kuota.
-  if (/irwan/i.test(question || "") && /faiz/i.test(question || "")){
-    await sleep(700); // jeda kecil biar kerasa natural, bukan instan banget
-    removeTyping();
-    const easterEggReply = "Irwan Khoirul Faiz itu Sortation Center Shift Lead di Palangka Raya DC ini bro — " +
-      "dia yang bangun tiap module di dashboard ini dari nol, dan gua (The Odyssey) juga ciptaan dia. " +
-      "Jadi kalau dashboard ini kerasa membantu, itu berkat dia. 🙌";
-    addMessage("agent", easterEggReply, null, null, null);
-    chatHistory.push({role:"assistant", content: easterEggReply});
-    scheduleSaveSession();
-    return;
-  }
 
   const lateCount = currentTrips.filter(t => t.status === "Late Arrival").length;
   const convoyGroups = computeConvoyGroups(currentTrips);
@@ -2504,16 +2604,16 @@ Format WAJIB buat semua jam/tanggal yang kamu tulis: "DD/MM HH:mm WIB" (contoh: 
 ambil dari jam lokal yang ada di field "timestamp" (jangan tulis format ISO/teknis mentah-mentah).
 
 logRestTime (JSON, total ${currentRestLogs.length} entri):
-${JSON.stringify(currentRestLogs)}
+${JSON.stringify(currentRestLogs, null, 2)}
 
 logAssetUsage (JSON, total ${currentAssetLogs.length} entri):
-${JSON.stringify(currentAssetLogs)}
+${JSON.stringify(currentAssetLogs, null, 2)}
 
 masterKaryawan (JSON):
-${JSON.stringify(monMasterKaryawan)}
+${JSON.stringify(monMasterKaryawan, null, 2)}
 
 pdaStationMap (JSON):
-${JSON.stringify(monPdaStationMap)}
+${JSON.stringify(monPdaStationMap, null, 2)}
 
 Kalau ketiga/keempat data di atas kosong semua ("[]"/"{}"), berarti Odyssey gagal narik data live (belum
 login / Firebase belum siap) — bilang terus terang ke user, JANGAN ngarang jawaban.
@@ -2577,7 +2677,7 @@ Format WAJIB buat semua jam yang kamu tulis (kalau relevan): format jam biasa "H
 data (data ini emang udah dalam format jam lokal WIB, gak perlu dikonversi/ditulis ulang aneh-aneh).
 
 ringkasanOutbound (JSON):
-${JSON.stringify(outboundSummary)}
+${JSON.stringify(outboundSummary, null, 2)}
 
 ${jsonFormatRule}
 
@@ -2638,7 +2738,7 @@ belum pernah ada file PDVT yang di-import ke modul ini bulan ini sama sekali —
 user, JANGAN ngarang angka.
 
 ringkasanPerformanceBagger (JSON):
-${JSON.stringify(pbSummary)}
+${JSON.stringify(pbSummary, null, 2)}
 
 ${jsonFormatRule}
 
@@ -2692,7 +2792,7 @@ Kalau "stockLengkap" DAN "assetItNcaLengkap" DAN "auditLogTerbaru_Max100" semuan
 belum ada data sama sekali di modul ini — bilang terus terang ke user, JANGAN ngarang.
 
 ringkasanInventoryControl (JSON):
-${JSON.stringify(invSummary)}
+${JSON.stringify(invSummary, null, 2)}
 
 ${jsonFormatRule}
 
@@ -2794,11 +2894,11 @@ di tanggal yang ditanya).
 
 Data trip tercatat, total ${currentTrips.length} trip, dengan ${lateCount} di antaranya berstatus
 "Late Arrival" (JSON):
-${JSON.stringify(currentTrips)}
+${JSON.stringify(currentTrips, null, 2)}
 
 convoyGroupsSudahDihitungFinal — daftar grup Convoy yang UDAH dihitung final sama sistem (JANGAN dihitung
 ulang, lihat instruksi Convoy di atas), total ${convoyGroups.length} grup (JSON):
-${JSON.stringify(convoyGroups)}
+${JSON.stringify(convoyGroups, null, 2)}
 
 ${jsonFormatRule}
 
@@ -2869,24 +2969,9 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
     // model yang barusan gagal) sampai maxAttempts kali, sebelum akhirnya
     // nyerah & nampilin pesan "berantakan" ke user.
     const maxAttempts = 3;
-    // Retry rate-limit itu jatah TERPISAH dari maxAttempts (yang buat ganti
-    // model pas JSON-nya berantakan) — proxy udah nyisir SELURUH model chain
-    // sendiri sebelum balikin 429, jadi ganti-ganti preferred_model di sisi
-    // klien gak ada gunanya buat kasus ini. Yang berguna cuma nunggu jatah
-    // reset lalu nyoba lagi.
-    // TAPI kalau prompt-nya GEDE (mode report/data query kayak Inventory
-    // Control yang nge-dump stock/asset/audit log), ngirim ulang payload
-    // segede itu berkali-kali pas lagi rate limit malah bikin makin cepet
-    // abis jatah token per-menit-nya. Jadi buat prompt gede cukup 1x retry
-    // aja (bukan 2x) dengan nunggu penuh sesuai retryDelay asli dari Gemini
-    // (gak dipangkas kayak prompt kecil), bukan berkali-kali ngirim ulang.
-    const requestSizeChars = (systemPrompt || "").length + JSON.stringify(contentsForApi).length;
-    const isBigPrompt = requestSizeChars > 20000; // ~5rb token, kasar
-    const maxRateLimitRetries = isBigPrompt ? 1 : 2;
     const usedModels = [];
     let attemptModel = preferredModel;
     let data, ok = false, parsed, text = "", rawModelUsed = "";
-    let rateLimitRetryCount = 0;
 
     for (let attemptNum = 1; attemptNum <= maxAttempts; attemptNum++){
       const requestBody = Object.assign({}, requestBodyBase);
@@ -2904,22 +2989,7 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
         throw new Error("Server balikin respons non-JSON (kemungkinan function belum ke-deploy atau crash). Cuplikan: " + rawText.slice(0,150));
       }
       if (!response.ok){
-        const errMsg = (data && data.error && data.error.message) ? data.error.message : ((data && data.error) ? JSON.stringify(data.error) : ("HTTP " + response.status + " (respons kosong)"));
-
-        // Kena rate limit & masih ada jatah retry -> jangan langsung nyerah.
-        // Tunggu (pakai retryDelay dari Gemini kalau ada info-nya), kasih
-        // tau user lewat status di typing indicator, terus coba lagi.
-        if ((response.status === 429 || isRateLimitMsg(errMsg)) && rateLimitRetryCount < maxRateLimitRetries){
-          rateLimitRetryCount++;
-          const waitMs = retryDelayMsOf(errMsg, isBigPrompt ? 60000 : 15000);
-          setTypingStatus(`kena rate limit, nunggu ${Math.ceil(waitMs/1000)}s terus coba lagi (${rateLimitRetryCount}/${maxRateLimitRetries})...`);
-          await sleep(waitMs);
-          setTypingStatus("");
-          attemptNum--; // jangan makan jatah maxAttempts (itu buat retry ganti-model JSON-parse)
-          continue;
-        }
-
-        throw new Error(errMsg);
+        throw new Error((data && data.error && data.error.message) ? data.error.message : ((data && data.error) ? data.error : ("HTTP " + response.status + " (respons kosong)")));
       }
       // Gemini balikin "candidates" (bukan "choices" kayak OpenAI/Groq). Kalau
       // jawaban keblokir safety filter, candidates bisa kosong & alasannya ada
@@ -3076,17 +3146,29 @@ function handlePasteEvent(e){
 document.getElementById("chatInput").addEventListener("paste", handlePasteEvent);
 document.getElementById("removeImgBtn").addEventListener("click", clearPendingImage);
 
-document.getElementById("sendBtn").addEventListener("click", () => {
-  const input = document.getElementById("chatInput");
-  const q = input.value.trim();
+// commitSend() dipakai bareng sama tombol Kirim, tombol Enter, dan pemilihan
+// command dari Command Palette (biar logic "harus ada teks ATAU gambar" +
+// clear pending image gak keduplikasi di beberapa tempat).
+function commitSend(text){
+  const q = (text || "").trim();
   if (!q && !pendingImageDataUrl) return; // minimal harus ada teks ATAU gambar
-  input.value = "";
   const img = pendingImageDataUrl;
   clearPendingImage();
   askAgent(q, img);
+}
+document.getElementById("sendBtn").addEventListener("click", () => {
+  const input = document.getElementById("chatInput");
+  const q = input.value;
+  input.value = "";
+  hideCmdPalette();
+  commitSend(q);
 });
 document.getElementById("chatInput").addEventListener("keydown", (e) => {
+  if (handleCmdPaletteKeydown(e)) return; // command palette lagi kebuka, biarin dia yang nangkep tombolnya
   if (e.key === "Enter") document.getElementById("sendBtn").click();
+});
+document.getElementById("chatInput").addEventListener("input", (e) => {
+  updateCmdPalette(e.target.value);
 });
 
 // Sama kayak inbound.html: baru mulai sync Firebase SETELAH status login kevalidasi.

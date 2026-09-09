@@ -385,8 +385,6 @@
       <div class="model-select-row">
         <select id="modelSelect" class="model-select" title="Pilih model AI">
           <option value="">Auto</option>
-          <option value="gemini-2.5-flash-lite">Odyssey 2.5</option>
-          <option value="gemini-2.5-flash">Odyssey 2.5 Pro</option>
           <option value="gemini-3-flash">Odyssey 3.0</option>
           <option value="gemini-3.1-flash-lite">Odyssey 3.1</option>
           <option value="gemini-3.5-flash">Odyssey 3.5 Pro</option>
@@ -1677,8 +1675,6 @@ function typewriterInto(bubbleEl, fullText, onDone){
 // & proxy fallback ke model lain, yang balikin id mentah kayak
 // "gemini-3.6-flash").
 const ODYSSEY_MODEL_NAMES = {
-  "gemini-2.5-flash-lite": "Odyssey 2.5",
-  "gemini-2.5-flash": "Odyssey 2.5 Pro",
   "gemini-3-flash": "Odyssey 3.0",
   "gemini-3.1-flash-lite": "Odyssey 3.1",
   "gemini-3.5-flash": "Odyssey 3.5 Pro",
@@ -1694,13 +1690,10 @@ function friendlyModelName(rawId){
 
 // Urutan sama persis kayak GEMINI_MODEL_CHAIN di gemini-proxy.js — dipakai
 // buat retry SISI KLIEN (lihat askAgent) waktu satu model jawab tapi
-// hasilnya BUKAN rate limit, melainkan output-nya gak valid JSON (ini gak
-// ke-detect sama proxy karena proxy cuma ngecek status HTTP/RESOURCE_EXHAUSTED,
-// bukan ngerti isi balasan). Kalau ada model baru ditambah di proxy, tambahin
-// juga di sini biar auto-switch-nya ikut jalan.
+// hasilnya BUKAN rate limit/model retired (itu udah ke-handle proxy),
+// melainkan output-nya gak valid JSON. Model 2.5 SENGAJA gak dimasukin —
+// udah di-retire Google buat API key baru, jadi percuma dicoba.
 const ODYSSEY_MODEL_CHAIN = [
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
   "gemini-3-flash",
   "gemini-3.1-flash-lite",
   "gemini-3.5-flash",

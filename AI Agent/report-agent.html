@@ -1877,7 +1877,7 @@ function addTyping(){
   const el = document.createElement("div");
   el.className = "msg agent";
   el.id = "typingIndicator";
-  el.innerHTML = '<div class="msg-row"><div class="avatar avatar-agent"><img src="" alt="Odyssey" id="typingAvatarImg"></div><div style="display:flex;flex-direction:column;gap:4px;"><div class="who">Odyssey</div><div class="typing-dots"><span></span><span></span><span></span></div></div></div>';
+  el.innerHTML = '<div class="msg-row"><div class="avatar avatar-agent"><img src="" alt="Odyssey" id="typingAvatarImg"></div><div style="display:flex;flex-direction:column;gap:4px;"><div class="who">Odyssey <span id="typingStatus" style="color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;"></span></div><div class="typing-dots"><span></span><span></span><span></span></div></div></div>';
   log.appendChild(el);
   document.getElementById("typingAvatarImg").src = window.__ODYSSEY_LOGO;
   log.scrollTop = log.scrollHeight;
@@ -1885,6 +1885,12 @@ function addTyping(){
 function removeTyping(){
   const el = document.getElementById("typingIndicator");
   if (el) el.remove();
+}
+// Update label kecil di sebelah "Odyssey" pas typing — dipakai buat kasih
+// tau user AI Agent-nya lagi nunggu jatah rate limit reset, bukan diem aja.
+function setTypingStatus(text){
+  const el = document.getElementById("typingStatus");
+  if (el) el.textContent = text ? ("· " + text) : "";
 }
 
 // ===== Lightbox gambar in-app (ganti window.open tab baru) =====
@@ -2126,6 +2132,26 @@ function loadSession(sessionId){
       refreshSessionsList();
     })
     .catch(function(e){ console.warn("Gagal muat sesi:", e.message); });
+}
+
+function sleep(ms){
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Kena limit pemakaian (rate limit/quota free tier Gemini)?
+function isRateLimitMsg(raw){
+  const msg = String(raw || "");
+  return /rate.?limit/i.test(msg) || /RESOURCE_EXHAUSTED/i.test(msg) || /quota/i.test(msg) || /\b429\b/.test(msg);
+}
+
+// Ambil berapa detik lagi kudu nunggu dari pesan error (kalau Gemini kasih
+// tau lewat "retryDelay"/"try again in Xs"). Kalau gak ada info itu, fallback
+// ke jeda pendek. Di-cap max 15s biar user gak nunggu kelamaan di 1x percobaan.
+function retryDelayMsOf(raw){
+  const msg = String(raw || "");
+  const m = msg.match(/"retryDelay"\s*:\s*"([\d.]+)s"/i) || msg.match(/try again in\s*([\d.]+)\s*s/i);
+  const seconds = m ? parseFloat(m[1]) : 5;
+  return Math.min(Math.max(seconds, 1), 15) * 1000;
 }
 
 // Ubah pesan error teknis dari API jadi kalimat simpel yang enak dibaca user
@@ -2825,9 +2851,16 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
     // model yang barusan gagal) sampai maxAttempts kali, sebelum akhirnya
     // nyerah & nampilin pesan "berantakan" ke user.
     const maxAttempts = 3;
+    // Retry rate-limit itu jatah TERPISAH dari maxAttempts (yang buat ganti
+    // model pas JSON-nya berantakan) — proxy udah nyisir SELURUH model chain
+    // sendiri sebelum balikin 429, jadi ganti-ganti preferred_model di sisi
+    // klien gak ada gunanya buat kasus ini. Yang berguna cuma nunggu jatah
+    // reset lalu nyoba lagi. Dibatasin 2x biar user gak nunggu kelamaan.
+    const maxRateLimitRetries = 2;
     const usedModels = [];
     let attemptModel = preferredModel;
     let data, ok = false, parsed, text = "", rawModelUsed = "";
+    let rateLimitRetryCount = 0;
 
     for (let attemptNum = 1; attemptNum <= maxAttempts; attemptNum++){
       const requestBody = Object.assign({}, requestBodyBase);
@@ -2845,7 +2878,22 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
         throw new Error("Server balikin respons non-JSON (kemungkinan function belum ke-deploy atau crash). Cuplikan: " + rawText.slice(0,150));
       }
       if (!response.ok){
-        throw new Error((data && data.error && data.error.message) ? data.error.message : ((data && data.error) ? data.error : ("HTTP " + response.status + " (respons kosong)")));
+        const errMsg = (data && data.error && data.error.message) ? data.error.message : ((data && data.error) ? JSON.stringify(data.error) : ("HTTP " + response.status + " (respons kosong)"));
+
+        // Kena rate limit & masih ada jatah retry -> jangan langsung nyerah.
+        // Tunggu (pakai retryDelay dari Gemini kalau ada info-nya), kasih
+        // tau user lewat status di typing indicator, terus coba lagi.
+        if ((response.status === 429 || isRateLimitMsg(errMsg)) && rateLimitRetryCount < maxRateLimitRetries){
+          rateLimitRetryCount++;
+          const waitMs = retryDelayMsOf(errMsg);
+          setTypingStatus(`kena rate limit, nunggu ${Math.ceil(waitMs/1000)}s terus coba lagi (${rateLimitRetryCount}/${maxRateLimitRetries})...`);
+          await sleep(waitMs);
+          setTypingStatus("");
+          attemptNum--; // jangan makan jatah maxAttempts (itu buat retry ganti-model JSON-parse)
+          continue;
+        }
+
+        throw new Error(errMsg);
       }
       // Gemini balikin "candidates" (bukan "choices" kayak OpenAI/Groq). Kalau
       // jawaban keblokir safety filter, candidates bisa kosong & alasannya ada

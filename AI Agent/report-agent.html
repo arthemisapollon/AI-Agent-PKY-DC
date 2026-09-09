@@ -2200,7 +2200,13 @@ async function askAgent(question, imageDataUrl){
   // monPdaStationMap), BUKAN dari gambar. Kata kunci sengaja dibikin luas biar
   // nangkep istilah opsional yang biasa dipakai Shift Lead sehari-hari di
   // lapangan (istirahat, PDA, pinjam/kembali, check in, dst).
-  const restAssetKeywords = /rest\s*time|istirahat|\bbreak\s*(in|out)?\b|check\s*-?\s*in\b|check\s*-?\s*out\b|\bpda\b|asset usage|\basset\b|serial number|\bsn\b|pinjam|kembali|ops\s*id|opsid|karyawan|operator|\bstation\b|\bidle\b|overtime|kelamaan|kelamaan istirahat|terkunci|\block\b|\bcycle\b|agency|departemen|\bdept\b/i;
+  // CATATAN FIX: kata "asset" polos (\basset\b) SENGAJA DIBUANG dari sini — sebelumnya bikin
+  // pertanyaan soal modul Inventory Control (mis. "Asset IT & NCA", "status asset", "jumlah asset")
+  // ke-tag duluan sebagai topik Rest Time/PDA (karena Rest Time dicek LEBIH DULU di urutan
+  // if/else-nya), padahal maksud user soal Inventory Control. Modul Rest Time tetep ke-cover kok
+  // lewat kata kunci lain yang emang spesifik ke PDA: \bpda\b, "asset usage" (frasa utuh), check-in/
+  // check-out, istirahat, pinjam, kembali, dst.
+  const restAssetKeywords = /rest\s*time|istirahat|\bbreak\s*(in|out)?\b|check\s*-?\s*in\b|check\s*-?\s*out\b|\bpda\b|asset usage|serial number|\bsn\b|pinjam|kembali|ops\s*id|opsid|karyawan|operator|\bstation\b|\bidle\b|overtime|kelamaan|kelamaan istirahat|terkunci|\block\b|\bcycle\b|agency|departemen|\bdept\b/i;
   const isRestAssetQuery = !isDwReport && !isQueueReport && restAssetKeywords.test(question || "");
   // Topik kelima: MODUL OUTBOUND — Aging & Packer Backlog + Occupancy & Shift Departure. Beda lagi
   // dari 4 topik di atas (trip Inbound / DW Fulfillment / Antrian Inbound / Rest Time & Asset Usage).

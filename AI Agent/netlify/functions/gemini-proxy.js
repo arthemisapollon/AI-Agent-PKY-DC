@@ -63,6 +63,16 @@ function isRateLimitError(status, data){
   return /RESOURCE_EXHAUSTED/i.test(errMsgOf(data));
 }
 
+// Model-nya lagi kebanjiran trafik di sisi Google (503 "The model is
+// overloaded"/"currently experiencing high demand"/UNAVAILABLE) — BUKAN
+// soal kuota kita, tapi tetep layak pindah ke model lain di chain (nunggu
+// di model yang sama percuma, model lain lebih mungkin lowong).
+function isOverloadedError(status, data){
+  if (status === 503) return true;
+  const msg = errMsgOf(data);
+  return /UNAVAILABLE/i.test(msg) || /overloaded/i.test(msg) || /experiencing high demand/i.test(msg);
+}
+
 // Model-nya sendiri yang bermasalah: udah di-retire/gak available buat key
 // ini (404), atau ID model salah/gak ketemu. Gak ada gunanya diulang di
 // model yang sama — harus lompat ke model LAIN di chain.
@@ -185,7 +195,7 @@ exports.handler = async function (event) {
           if (isThinkingLevelError(result.status, result.data)){
             continue; // naik ke level berikutnya, model yang sama
           }
-          if (isRateLimitError(result.status, result.data) || isModelUnavailableError(result.status, result.data)){
+          if (isRateLimitError(result.status, result.data) || isModelUnavailableError(result.status, result.data) || isOverloadedError(result.status, result.data)){
             break; // nyerah di model ini, lanjut ke model berikutnya di chain
           }
 
@@ -207,14 +217,19 @@ exports.handler = async function (event) {
     return { done: false, lastResult: lastResult };
   }
 
-  // Putaran pertama nyisir semua model di chain. Kalau semuanya kena rate
-  // limit (429/RESOURCE_EXHAUSTED) — bukan model-nya rusak, cuma lagi
-  // penuh jatahnya — worth it buat nunggu bentar (pakai retryDelay dari
-  // Gemini kalau ada) terus nyoba SATU putaran lagi dari awal chain,
-  // sebelum akhirnya nyerah & lapor rate-limit ke client. Cuma 1x extra
-  // pass biar total durasi function tetep aman dari timeout Netlify.
+  // Putaran pertama nyisir semua model di chain. Kalau SEMUA kena rate limit
+  // & prompt-nya kecil (obrolan ringan, bukan dump data gede kayak query
+  // Inventory Control/report), worth it nunggu bentar (pakai retryDelay dari
+  // Gemini kalau ada) terus nyoba SATU putaran lagi. Prompt yang GEDE
+  // sengaja GAK di-retry di sini — ngirim ulang payload segede itu ke 7
+  // model cuma bikin kuota token per-menit makin cepet abis, bukan bantu.
+  // Cuma 1x extra pass & cuma buat prompt kecil biar durasi function tetep
+  // aman dari timeout Netlify.
+  const SMALL_PROMPT_CHAR_LIMIT = 20000; // ~5rb token, kasar
+  const promptCharLen = JSON.stringify(geminiBodyBase).length;
+
   let pass = await runChainPass();
-  if (!pass.done && pass.lastResult && isRateLimitError(pass.lastResult.status, pass.lastResult.data)){
+  if (!pass.done && pass.lastResult && isRateLimitError(pass.lastResult.status, pass.lastResult.data) && promptCharLen < SMALL_PROMPT_CHAR_LIMIT){
     await sleep(retryDelayMsOf(pass.lastResult.data));
     pass = await runChainPass();
   }

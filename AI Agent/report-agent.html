@@ -385,9 +385,15 @@
       <div class="model-select-row">
         <select id="modelSelect" class="model-select" title="Pilih model AI">
           <option value="">Auto</option>
-          <option value="gemini-3.6-flash">Odyssey 3.6 Pro</option>
-          <option value="gemini-3.5-flash-lite">Odyssey 3.5</option>
+          <option value="gemini-2.5-flash-lite">Odyssey 2.5</option>
+          <option value="gemini-2.5-flash">Odyssey 2.5 Pro</option>
+          <option value="gemini-3-flash">Odyssey 3.0</option>
           <option value="gemini-3.1-flash-lite">Odyssey 3.1</option>
+          <option value="gemini-3.5-flash">Odyssey 3.5 Pro</option>
+          <option value="gemini-3.5-flash-lite">Odyssey 3.5</option>
+          <option value="gemini-3.6-flash">Odyssey 3.6</option>
+          <option value="gemini-3.7-flash">Odyssey 3.7</option>
+          <option value="gemini-3.8-flash">Odyssey 3.8</option>
         </select>
       </div>
       <div class="img-preview-row" id="imgPreviewRow">
@@ -1671,14 +1677,38 @@ function typewriterInto(bubbleEl, fullText, onDone){
 // & proxy fallback ke model lain, yang balikin id mentah kayak
 // "gemini-3.6-flash").
 const ODYSSEY_MODEL_NAMES = {
-  "gemini-3.6-flash": "Odyssey 3.6 Pro",
+  "gemini-2.5-flash-lite": "Odyssey 2.5",
+  "gemini-2.5-flash": "Odyssey 2.5 Pro",
+  "gemini-3-flash": "Odyssey 3.0",
+  "gemini-3.1-flash-lite": "Odyssey 3.1",
+  "gemini-3.5-flash": "Odyssey 3.5 Pro",
   "gemini-3.5-flash-lite": "Odyssey 3.5",
-  "gemini-3.1-flash-lite": "Odyssey 3.1"
+  "gemini-3.6-flash": "Odyssey 3.6",
+  "gemini-3.7-flash": "Odyssey 3.7",
+  "gemini-3.8-flash": "Odyssey 3.8"
 };
 function friendlyModelName(rawId){
   if (!rawId) return "Auto";
   return ODYSSEY_MODEL_NAMES[rawId] || "Odyssey";
 }
+
+// Urutan sama persis kayak GEMINI_MODEL_CHAIN di gemini-proxy.js — dipakai
+// buat retry SISI KLIEN (lihat askAgent) waktu satu model jawab tapi
+// hasilnya BUKAN rate limit, melainkan output-nya gak valid JSON (ini gak
+// ke-detect sama proxy karena proxy cuma ngecek status HTTP/RESOURCE_EXHAUSTED,
+// bukan ngerti isi balasan). Kalau ada model baru ditambah di proxy, tambahin
+// juga di sini biar auto-switch-nya ikut jalan.
+const ODYSSEY_MODEL_CHAIN = [
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
+  "gemini-3.7-flash",
+  "gemini-3.8-flash"
+];
 
 // Bikin bunyi "blip" halus pakai oscillator, bukan file audio — biar ringan
 // & gak perlu nge-load asset tambahan. "sent" nadanya naik dikit (lebih
@@ -2778,7 +2808,7 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
     // fallback ke chain default kalau model itu kena rate limit.
     const modelSelectEl = document.getElementById("modelSelect");
     const preferredModel = modelSelectEl ? modelSelectEl.value : "";
-    const requestBody = {
+    const requestBodyBase = {
       max_tokens: isDataQuery ? 3000 : 1500, // mode report dikasih jatah lebih gede
       // Level thinking: mode data (trip JSON / DW report) butuh AI teliti nyisir
       // data satu-satu DAN gak kebawa topik riwayat obrolan sebelumnya (misal abis
@@ -2789,68 +2819,96 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
       system: systemPrompt,
       contents: contentsForApi
     };
-    if (preferredModel) requestBody.preferred_model = preferredModel;
-    const response = await fetch("/.netlify/functions/gemini-proxy", {
-      method:"POST",
-      headers:{"Content-Type":"application/json"},
-      body: JSON.stringify(requestBody)
-    });
-    const rawText = await response.text();
-    let data;
-    try{
-      data = rawText ? JSON.parse(rawText) : {};
-    }catch(e){
-      throw new Error("Server balikin respons non-JSON (kemungkinan function belum ke-deploy atau crash). Cuplikan: " + rawText.slice(0,150));
-    }
-    if (!response.ok){
-      throw new Error((data && data.error && data.error.message) ? data.error.message : ((data && data.error) ? data.error : ("HTTP " + response.status + " (respons kosong)")));
-    }
-    // Gemini balikin "candidates" (bukan "choices" kayak OpenAI/Groq). Kalau
-    // jawaban keblokir safety filter, candidates bisa kosong & alasannya ada
-    // di promptFeedback.blockReason.
-    const candidate = (data.candidates && data.candidates[0]) || null;
-    if (!candidate && data.promptFeedback && data.promptFeedback.blockReason){
-      throw new Error("blockReason: " + data.promptFeedback.blockReason);
-    }
-    const partsText = candidate && candidate.content && Array.isArray(candidate.content.parts)
-      ? candidate.content.parts.map(p => (p && p.text) || "").join("")
-      : "";
-    let text = partsText.trim();
-    // Bersihin code fence di mana pun posisinya (bukan cuma di awal/akhir persis)
-    text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
 
-    // Ambil substring dari kurung kurawal PERTAMA sampai kurung kurawal
-    // TERAKHIR — jadi kalau AI masih nyelipin kalimat pembuka/penutup di luar
-    // JSON (padahal udah dilarang), itu gak bikin JSON.parse langsung gagal.
-    const firstBrace = text.indexOf("{");
-    const lastBrace = text.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace){
-      text = text.slice(firstBrace, lastBrace + 1);
+    // --- Loop retry sisi klien -------------------------------------------
+    // Proxy (gemini-proxy.js) UDAH otomatis ganti model kalau kena rate limit
+    // (429/RESOURCE_EXHAUSTED) — itu ke-handle di server, satu request aja
+    // cukup. TAPI ada kasus lain yang gak ke-detect proxy: model-nya JAWAB
+    // (status 200, bukan rate limit) tapi isinya BUKAN JSON valid (paling
+    // sering kejadian di model "lite" yang kurang nurut instruksi format).
+    // Ini gak bisa di-fix di server karena proxy gak ngerti skema JSON
+    // aplikasi (replyLines/attachedUnits). Jadi retry-nya di sini: kalau
+    // parse gagal, otomatis coba ulang pakai model LAIN di chain (bukan
+    // model yang barusan gagal) sampai maxAttempts kali, sebelum akhirnya
+    // nyerah & nampilin pesan "berantakan" ke user.
+    const maxAttempts = 3;
+    const usedModels = [];
+    let attemptModel = preferredModel;
+    let data, ok = false, parsed, text = "", rawModelUsed = "";
+
+    for (let attemptNum = 1; attemptNum <= maxAttempts; attemptNum++){
+      const requestBody = Object.assign({}, requestBodyBase);
+      if (attemptModel) requestBody.preferred_model = attemptModel;
+
+      const response = await fetch("/.netlify/functions/gemini-proxy", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify(requestBody)
+      });
+      const rawText = await response.text();
+      try{
+        data = rawText ? JSON.parse(rawText) : {};
+      }catch(e){
+        throw new Error("Server balikin respons non-JSON (kemungkinan function belum ke-deploy atau crash). Cuplikan: " + rawText.slice(0,150));
+      }
+      if (!response.ok){
+        throw new Error((data && data.error && data.error.message) ? data.error.message : ((data && data.error) ? data.error : ("HTTP " + response.status + " (respons kosong)")));
+      }
+      // Gemini balikin "candidates" (bukan "choices" kayak OpenAI/Groq). Kalau
+      // jawaban keblokir safety filter, candidates bisa kosong & alasannya ada
+      // di promptFeedback.blockReason.
+      const candidate = (data.candidates && data.candidates[0]) || null;
+      if (!candidate && data.promptFeedback && data.promptFeedback.blockReason){
+        throw new Error("blockReason: " + data.promptFeedback.blockReason);
+      }
+      const partsText = candidate && candidate.content && Array.isArray(candidate.content.parts)
+        ? candidate.content.parts.map(p => (p && p.text) || "").join("")
+        : "";
+      text = partsText.trim();
+      // Bersihin code fence di mana pun posisinya (bukan cuma di awal/akhir persis)
+      text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+      // Ambil substring dari kurung kurawal PERTAMA sampai kurung kurawal
+      // TERAKHIR — jadi kalau AI masih nyelipin kalimat pembuka/penutup di luar
+      // JSON (padahal udah dilarang), itu gak bikin JSON.parse langsung gagal.
+      const firstBrace = text.indexOf("{");
+      const lastBrace = text.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace > firstBrace){
+        text = text.slice(firstBrace, lastBrace + 1);
+      }
+
+      // Coba parse langsung dulu. Kalau AI-nya (Gemini) masih ngasal — misal nulis
+      // enter/tab literal, over-escape jadi "\\n" dobel, pakai tanda kutip
+      // "pintar" (smart quotes), atau nyisain trailing comma — di dalam string
+      // JSON, JSON.parse bisa gagal atau kebaca aneh.
+      const attempts = [
+        text,
+        text.replace(/\r\n|\r|\n/g, "\\n").replace(/\t/g, "\\t"), // newline/tab literal -> escaped
+        text.replace(/\\\\n/g, "\\n").replace(/\\\\t/g, "\\t"),    // over-escaped \\n -> \n
+        text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"'), // smart quotes -> lurus
+        text.replace(/,\s*([\]}])/g, "$1")                         // hapus trailing comma sebelum ] / }
+      ];
+      for (const candidateText of attempts){
+        try{ parsed = JSON.parse(candidateText); ok = true; break; }
+        catch(e){ /* coba kandidat berikutnya */ }
+      }
+
+      rawModelUsed = (data && (data.modelUsed || data.model)) || attemptModel || "";
+      if (rawModelUsed) usedModels.push(rawModelUsed);
+
+      if (ok) break; // sukses, gak perlu retry ke model lain
+
+      // Parse gagal -> siapin model lain buat percobaan berikutnya (kalau
+      // masih ada jatah attempt & masih ada model yang belum dicoba).
+      const nextModel = ODYSSEY_MODEL_CHAIN.find(m => !usedModels.includes(m));
+      if (!nextModel || attemptNum === maxAttempts) break;
+      attemptModel = nextModel;
     }
 
-    // Coba parse langsung dulu. Kalau AI-nya (Gemini) masih ngasal — misal nulis
-    // enter/tab literal, over-escape jadi "\\n" dobel, pakai tanda kutip
-    // "pintar" (smart quotes), atau nyisain trailing comma — di dalam string
-    // JSON, JSON.parse bisa gagal atau kebaca aneh. Sebelumnya ini bikin
-    // mentahan JSON ke-tampil ke chat. Sekarang kalau parse pertama gagal,
-    // coba beberapa cara perbaikan berurutan sebelum nyerah ke fallback.
-    let parsed;
-    let ok = false;
-    const attempts = [
-      text,
-      text.replace(/\r\n|\r|\n/g, "\\n").replace(/\t/g, "\\t"), // newline/tab literal -> escaped
-      text.replace(/\\\\n/g, "\\n").replace(/\\\\t/g, "\\t"),    // over-escaped \\n -> \n
-      text.replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"'), // smart quotes -> lurus
-      text.replace(/,\s*([\]}])/g, "$1")                         // hapus trailing comma sebelum ] / }
-    ];
-    for (const candidate of attempts){
-      try{ parsed = JSON.parse(candidate); ok = true; break; }
-      catch(e){ /* coba kandidat berikutnya */ }
-    }
-
-    // Last resort kalau SEMUA percobaan JSON.parse tetep gagal: jangan lempar
-    // mentahan JSON ke chat kayak sebelumnya — tarik isi array "replyLines"
-    // pakai regex biar user tetap dapet teks yang bisa dibaca manusia.
+    // Last resort kalau SEMUA percobaan (termasuk ganti-ganti model) tetep
+    // gagal: jangan lempar mentahan JSON ke chat — tarik isi array
+    // "replyLines" pakai regex biar user tetap dapet teks yang bisa dibaca
+    // manusia dulu, sebelum bener-bener nyerah ke pesan "berantakan".
     if (!ok){
       const linesMatch = text.match(/"replyLines"\s*:\s*\[([\s\S]*?)\]\s*,\s*"attachedUnits"/);
       if (linesMatch){
@@ -2863,7 +2921,7 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
         if (items.length){ parsed = { replyLines: items, attachedUnits: [] }; ok = true; }
       }
     }
-    if (!ok) parsed = { replyLines: ["Waduh, format balasan AI-nya berantakan bro, coba tanya ulang sekali lagi ya."], attachedUnits: [] };
+    if (!ok) parsed = { replyLines: ["Waduh, format balasan AI-nya berantakan bro, udah gua coba ganti-ganti model tapi tetep gagal — coba tanya ulang sekali lagi ya."], attachedUnits: [] };
 
     // Susun teks final dari array replyLines (baris baru beneran, bukan hasil
     // escape dari AI) — kalau AI masih pakai format lama "reply" (string biasa),
@@ -2875,15 +2933,13 @@ Contoh buat jawaban singkat 1 baris, "replyLines" tetap array isi 1 item, misal:
       replyText = parsed.reply;
     }
 
-    // Label model yang jawab: pakai info dari proxy kalau ada (mis. dia fallback
-    // ke model lain karena preferredModel kena limit), kalau gak ada fallback ke
-    // model yang dipilih user di dropdown, atau "Auto" kalau dropdown-nya "Auto".
-    // Label model: selalu lewat friendlyModelName() biar nama vendor/tier
-    // asli (Gemini/Flash/Flash Lite) gak pernah nongol di UI, baik itu dari
-    // pilihan dropdown user ATAU dari id mentah yang dibalikin proxy waktu
-    // mode Auto/fallback.
-    const rawModelUsed = (data && (data.modelUsed || data.model)) || preferredModel || "";
-    const modelLabel = friendlyModelName(rawModelUsed);
+    // Label model yang jawab: pakai model TERAKHIR yang beneran sukses jawab
+    // (bisa beda dari pilihan dropdown user kalau proxy fallback rate-limit
+    // ATAU loop retry di atas ganti model gara-gara output berantakan), atau
+    // "Auto" kalau dropdown-nya "Auto" & gak ada info model dari proxy.
+    // Selalu lewat friendlyModelName() biar nama vendor/tier asli
+    // (Gemini/Flash/Flash Lite) gak pernah nongol di UI.
+    const modelLabel = friendlyModelName(rawModelUsed || preferredModel);
 
     removeTyping();
     addMessage("agent", replyText, parsed.attachedUnits, null, modelLabel);

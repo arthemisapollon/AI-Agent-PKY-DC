@@ -2219,6 +2219,21 @@ async function askAgent(question, imageDataUrl){
   scheduleSaveSession();
   addTyping();
 
+  // Easter egg: kalau ditanya soal Irwan Khoirul Faiz, jawab langsung dari
+  // sini TANPA manggil Gemini sama sekali — selain lebih personal/konsisten
+  // (gak tergantung model mana yang lagi jawab), ini juga nol biaya kuota.
+  if (/irwan/i.test(question || "") && /faiz/i.test(question || "")){
+    await sleep(700); // jeda kecil biar kerasa natural, bukan instan banget
+    removeTyping();
+    const easterEggReply = "Irwan Khoirul Faiz itu Sortation Center Shift Lead di Palangka Raya DC ini bro — " +
+      "dia yang bangun tiap module di dashboard ini dari nol, dan gua (The Odyssey) juga ciptaan dia. " +
+      "Jadi kalau dashboard ini kerasa membantu, itu berkat dia. 🙌";
+    addMessage("agent", easterEggReply, null, null, null);
+    chatHistory.push({role:"assistant", content: easterEggReply});
+    scheduleSaveSession();
+    return;
+  }
+
   const lateCount = currentTrips.filter(t => t.status === "Late Arrival").length;
   const convoyGroups = computeConvoyGroups(currentTrips);
 

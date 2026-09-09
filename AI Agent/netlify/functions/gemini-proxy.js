@@ -1,13 +1,19 @@
+// Urutan chain = urutan fallback: kalau model paling depan (atau
+// preferred_model dari dropdown) kena rate limit (429/RESOURCE_EXHAUSTED),
+// proxy otomatis nyoba model berikutnya di daftar ini sampai ada yang jawab.
+// Mapping nama tampilan "Odyssey x.x" -> id Gemini asli ada di report-agent.html
+// (konstanta ODYSSEY_MODEL_NAMES), urutannya sengaja disamain persis biar gak
+// bingung pas debug.
 const GEMINI_MODEL_CHAIN = [
-  "gemini-2.5-flash-lite"
-  "gemini-2.5-flash"
-  "gemini-3-flash"
-  "gemini-3.1-flash-lite"
-  "gemini-3.5-flash"
-  "gemini-3.5-flash-lite"
-  "gemini-3.6-flash"
-  "gemini-3.7-flash"
-  "gemini-3.8 flash",
+  "gemini-2.5-flash-lite",  // Odyssey 2.5
+  "gemini-2.5-flash",       // Odyssey 2.5 Pro
+  "gemini-3-flash",         // Odyssey 3.0
+  "gemini-3.1-flash-lite",  // Odyssey 3.1
+  "gemini-3.5-flash",       // Odyssey 3.5 Pro
+  "gemini-3.5-flash-lite",  // Odyssey 3.5
+  "gemini-3.6-flash",       // Odyssey 3.6
+  "gemini-3.7-flash",       // Odyssey 3.7
+  "gemini-3.8-flash",       // Odyssey 3.8
 ];
 
 function geminiUrlFor(model) {
